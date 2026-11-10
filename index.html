@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Rally - Retro Rickshaw Racer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { touch-action: manipulation; }
+        canvas { display: block; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white font-sans min-h-screen flex flex-col items-center justify-center p-2 select-none">
+
+    <!-- Header UI -->
+    <div class="w-full max-w-xl flex justify-between items-center mb-2 px-3 py-2 bg-gray-800 rounded-lg shadow border border-gray-700">
+        <div>
+            <h1 class="font-extrabold text-amber-400 text-lg sm:text-xl flex items-center space-x-1">
+                <span>🛺</span> <span>AUTO RALLY</span>
+            </h1>
+            <p class="text-[10px] text-gray-400">Offline Retro Rickshaw Racer</p>
+        </div>
+        <div class="flex items-center space-x-3 text-xs sm:text-sm">
+            <div class="text-right">
+                <span class="text-gray-400 block text-[10px] uppercase font-bold">Best Lap</span>
+                <span id="bestLapText" class="font-bold text-amber-400">--:--</span>
+            </div>
+            <button id="muteBtn" onclick="toggleMute()" class="bg-gray-700 hover:bg-gray-600 px-2.5 py-1.5 rounded text-base border border-gray-600 transition">
+                🔊
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Game Container -->
+    <div class="relative w-full max-w-xl bg-black rounded-xl overflow-hidden shadow-2xl border-2 border-amber-500">
+        <!-- Canvas -->
+        <canvas id="gameCanvas" width="600" height="400" class="w-full h-auto"></canvas>
+
+        <!-- Overlay Screen (Start / Game Over / Win) -->
+        <div id="overlay" class="absolute inset-0 bg-black/85 flex flex-col items-center justify-center p-6 text-center z-10">
+            <h2 id="overlayTitle" class="text-3xl sm:text-4xl font-extrabold text-amber-400 mb-2">🛺 AUTO RALLY</h2>
+            <p id="overlayDesc" class="text-xs sm:text-sm text-gray-300 mb-6 max-w-sm">
+                Complete 3 laps as fast as you can! Collect coins for extra speed, pick up shield power-ups, and avoid obstacles.
+            </p>
+            <button onclick="startGame()" class="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-600 hover:to-yellow-500 text-gray-900 font-extrabold text-base px-8 py-3 rounded-full shadow-lg transform active:scale-95 transition">
+                🚀 START RACE
+            </button>
+        </div>
+    </div>
+
+    <!-- Mobile Touch Controls -->
+    <div class="w-full max-w-xl grid grid-cols-2 gap-3 mt-3 sm:hidden">
+        <button id="btnLeft" class="bg-amber-600 active:bg-amber-700 text-white font-bold py-4 rounded-xl text-xl shadow-lg border border-amber-500 flex items-center justify-center">
+            ◀ LEFT
+        </button>
+        <button id="btnRight" class="bg-amber-600 active:bg-amber-700 text-white font-bold py-4 rounded-xl text-xl shadow-lg border border-amber-500 flex items-center justify-center">
+            RIGHT ▶
+        </button>
+    </div>
+
+    <p class="text-[11px] text-gray-400 mt-2 hidden sm:block">
+        Controls: Use <strong class="text-amber-400">Left / Right Arrow Keys</strong> or <strong class="text-amber-400">A / D</strong> to steer.
+    </p>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game State Variables
+        let isRunning = false;
+        let isMuted = false;
+        let animationId;
+        
+        let playerX = 300;
+        let playerSpeed = 0;
+        const maxSpeed = 7;
+        let roadOffset = 0;
+
+        let currentLap = 1;
+        const totalLaps = 3;
+        let lapDistance = 0;
+        const lapTargetDistance = 1200;
+
+        let raceStartTime = 0;
+        let elapsedTime = 0;
+        let bestLapTime = localStorage.getItem('auto_rally_best_time') || null;
+
+        let coinsCollected = 0;
+        let shieldActive = false;
+        let shieldTimer = 0;
+
+        let obstacles = [];
+        let coins = [];
+        let powerups = [];
+
+        // Audio Effects (Web Audio API)
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        let audioCtx;
+
+        function initAudio() {
+            if (!audioCtx) audioCtx = new AudioContext();
+        }
+
+        function playSound(type) {
+            if (isMuted || !audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            if (type === 'coin') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.1);
+            } else if (type === 'shield') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(600, audioCtx.currentTime + 0.2);
+                gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.2);
+            } else if (type === 'crash') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+                osc.frequency.linearRampToValueAtTime(40, audioCtx.currentTime + 0.3);
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.3);
+            }
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            document.getElementById('muteBtn').innerText = isMuted ? '🔇' : '🔊';
+        }
+
+        // Input Controls
+        const keys = { left: false, right: false };
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = true;
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+        });
+
+        // Touch Control Listeners
+        const btnLeft = document.getElementById('btnLeft');
+        const btnRight = document.getElementById('btnRight');
+
+        const bindTouch = (elem, keyName) => {
+            elem.addEventListener('touchstart', (e) => { e.preventDefault(); keys[keyName] = true; });
+            elem.addEventListener('touchend', (e) => { e.preventDefault(); keys[keyName] = false; });
+            elem.addEventListener('mousedown', () => { keys[keyName] = true; });
+            elem.addEventListener('mouseup', () => { keys[keyName] = false; });
+        };
+        bindTouch(btnLeft, 'left');
+        bindTouch(btnRight, 'right');
+
+        // Formatted Time Helper
+        function formatTime(ms) {
+            if (!ms) return "--:--";
+            const sec = Math.floor(ms / 1000);
+            const dec = Math.floor((ms % 1000) / 10);
+            return `${sec.toString().padStart(2, '0')}:${dec.toString().padStart(2, '0')}`;
+        }
+
+        if (bestLapTime) {
+            document.getElementById('bestLapText').innerText = formatTime(parseInt(bestLapTime));
+        }
+
+        // Start / Reset Game
+        function startGame() {
+            initAudio();
+            playerX = 300;
+            playerSpeed = 4;
+            roadOffset = 0;
+            currentLap = 1;
+            lapDistance = 0;
+            coinsCollected = 0;
+            shieldActive = false;
+            shieldTimer = 0;
+            obstacles = [];
+            coins = [];
+            powerups = [];
+            raceStartTime = Date.now();
+            elapsedTime = 0;
+
+            document.getElementById('overlay').classList.add('hidden');
+            isRunning = true;
+            gameLoop();
+        }
+
+        function gameLoop() {
+            if (!isRunning) return;
+
+            update();
+            draw();
+
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // Game Logic Updates
+        function update() {
+            elapsedTime = Date.now() - raceStartTime;
+
+            // Steering Logic
+            if (keys.left) playerX -= 6;
+            if (keys.right) playerX += 6;
+
+            // Road boundaries constraint
+            const roadLeftBound = 160;
+            const roadRightBound = 440;
+            playerX = Math.max(roadLeftBound, Math.min(roadRightBound, playerX));
+
+            // Road Scrolling & Lap Progress
+            roadOffset = (roadOffset + playerSpeed) % 40;
+            lapDistance += playerSpeed;
+
+            if (lapDistance >= lapTargetDistance) {
+                lapDistance = 0;
+                currentLap += 1;
+                if (currentLap > totalLaps) {
+                    completeRace();
+                    return;
+                }
+            }
+
+            // Shield Timer Countdown
+            if (shieldActive) {
+                shieldTimer -= 1;
+                if (shieldTimer <= 0) shieldActive = false;
+            }
+
+            // Spawn Game Entities
+            if (Math.random() < 0.035) {
+                obstacles.push({
+                    x: Math.random() * (roadRightBound - roadLeftBound - 30) + roadLeftBound + 15,
+                    y: -40,
+                    speed: 2 + Math.random() * 2,
+                    type: Math.random() > 0.5 ? 'pothole' : 'barricade'
+                });
+            }
+
+            if (Math.random() < 0.04) {
+                coins.push({
+                    x: Math.random() * (roadRightBound - roadLeftBound - 20) + roadLeftBound + 10,
+                    y: -30,
+                    speed: 3
+                });
+            }
+
+            if (Math.random() < 0.008 && !shieldActive) {
+                powerups.push({
+                    x: Math.random() * (roadRightBound - roadLeftBound - 20) + roadLeftBound + 10,
+                    y: -30,
+                    speed: 3
+                });
+            }
+
+            // Update & Check Collisions for Obstacles
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.y += obs.speed + playerSpeed * 0.5;
+
+                // Collision with player auto-rickshaw
+                if (Math.abs(obs.x - playerX) < 26 && obs.y > 310 && obs.y < 370) {
+                    if (shieldActive) {
+                        shieldActive = false;
+                        playSound('shield');
+                        obstacles.splice(i, 1);
+                    } else {
+                        playSound('crash');
+                        playerSpeed = Math.max(1.5, playerSpeed - 2.5);
+                        obstacles.splice(i, 1);
+                    }
+                    continue;
+                }
+
+                if (obs.y > 440) obstacles.splice(i, 1);
+            }
+
+            // Update & Check Collisions for Coins
+            for (let i = coins.length - 1; i >= 0; i--) {
+                const c = coins[i];
+                c.y += c.speed + playerSpeed * 0.5;
+
+                if (Math.abs(c.x - playerX) < 25 && c.y > 310 && c.y < 370) {
+                    coinsCollected += 1;
+                    playSound('coin');
+                    playerSpeed = Math.min(maxSpeed, playerSpeed + 0.2);
+                    coins.splice(i, 1);
+                    continue;
+                }
+
+                if (c.y > 440) coins.splice(i, 1);
+            }
+
+            // Update & Check Collisions for Power-ups
+            for (let i = powerups.length - 1; i >= 0; i--) {
+                const p = powerups[i];
+                p.y += p.speed + playerSpeed * 0.5;
+
+                if (Math.abs(p.x - playerX) < 25 && p.y > 310 && p.y < 370) {
+                    shieldActive = true;
+                    shieldTimer = 300; // 5 seconds shield
+                    playSound('shield');
+                    powerups.splice(i, 1);
+                    continue;
+                }
+
+                if (p.y > 440) powerups.splice(i, 1);
+            }
+        }
+
+        // Render Canvas Visuals
+        function draw() {
+            // Sky / Horizon Background
+            ctx.fillStyle = '#f59e0b'; // Retro Warm Orange
+            ctx.fillRect(0, 0, 600, 140);
+
+            // Sun Graphic
+            ctx.fillStyle = '#fef08a';
+            ctx.beginPath();
+            ctx.arc(300, 90, 35, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Grass Scenery
+            ctx.fillStyle = '#15803d';
+            ctx.fillRect(0, 140, 600, 260);
+
+            // Pseudo-3D Perspective Road
+            ctx.fillStyle = '#374151';
+            ctx.beginPath();
+            ctx.moveTo(250, 140);
+            ctx.lineTo(350, 140);
+            ctx.lineTo(520, 400);
+            ctx.lineTo(80, 400);
+            ctx.closePath();
+            ctx.fill();
+
+            // Red & White Road Borders
+            const totalStripes = 10;
+            for (let i = 0; i < totalStripes; i++) {
+                let y1 = 140 + i * 26 + (roadOffset % 26);
+                let y2 = y1 + 13;
+                
+                ctx.fillStyle = (i % 2 === 0) ? '#ef4444' : '#ffffff';
+                ctx.fillRect(80 + (y1 - 140) * -0.65, y1, 10, 13);
+                ctx.fillRect(510 + (y1 - 140) * 0.65, y1, 10, 13);
+            }
+
+            // Dashed Center Line
+            ctx.strokeStyle = '#fef08a';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([15, 15]);
+            ctx.lineDashOffset = -roadOffset;
+            ctx.beginPath();
+            ctx.moveTo(300, 140);
+            ctx.lineTo(300, 400);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw Obstacles
+            obstacles.forEach(obs => {
+                if (obs.type === 'pothole') {
+                    ctx.fillStyle = '#111827';
+                    ctx.beginPath();
+                    ctx.ellipse(obs.x, obs.y, 16, 8, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    ctx.fillStyle = '#dc2626';
+                    ctx.fillRect(obs.x - 14, obs.y - 10, 28, 14);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(obs.x - 10, obs.y - 8, 8, 10);
+                    ctx.fillRect(obs.x + 2, obs.y - 8, 8, 10);
+                }
+            });
+
+            // Draw Coins
+            coins.forEach(c => {
+                ctx.fillStyle = '#eab308';
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#ca8a04';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            // Draw Power-ups (Shield)
+            powerups.forEach(p => {
+                ctx.fillStyle = '#3b82f6';
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 10px sans-serif';
+                ctx.fillText('🛡️', p.x - 6, p.y + 4);
+            });
+
+            // Draw Player Auto-Rickshaw (Yellow & Green Classic Indian Auto)
+            const x = playerX;
+            const y = 340;
+
+            // Shield Aura (if active)
+            if (shieldActive) {
+                ctx.strokeStyle = '#60a5fa';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(x, y + 10, 26, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // Auto Roof (Yellow Top)
+            ctx.fillStyle = '#facc15';
+            ctx.beginPath();
+            ctx.roundRect(x - 18, y - 20, 36, 22, 6);
+            ctx.fill();
+
+            // Auto Body (Green Lower Half)
+            ctx.fillStyle = '#15803d';
+            ctx.beginPath();
+            ctx.roundRect(x - 18, y + 2, 36, 20, 4);
+            ctx.fill();
+
+            // Black Windshield
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(x - 14, y - 16, 28, 10);
+
+            // Wheels
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(x - 21, y + 8, 4, 10); // Left
+            ctx.fillRect(x + 17, y + 8, 4, 10); // Right
+
+            // Tail Lights
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(x - 16, y + 20, 6, 3);
+            ctx.fillRect(x + 10, y + 20, 6, 3);
+
+            // In-Game Heads Up Display (HUD)
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx.fillRect(10, 10, 170, 75);
+            ctx.strokeStyle = '#4b5563';
+            ctx.strokeRect(10, 10, 170, 75);
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillText(`Laps: ${currentLap} / ${totalLaps}`, 20, 28);
+            ctx.fillText(`Time: ${formatTime(elapsedTime)}`, 20, 46);
+            ctx.fillText(`Coins: 🪙 ${coinsCollected}`, 20, 64);
+            if (shieldActive) {
+                ctx.fillStyle = '#60a5fa';
+                ctx.fillText(`Shield Active!`, 95, 28);
+            }
+        }
+
+        // Race Completion Handler
+        function completeRace() {
+            isRunning = false;
+            cancelAnimationFrame(animationId);
+
+            const totalTime = elapsedTime;
+            let isNewBest = false;
+
+            if (!bestLapTime || totalTime < parseInt(bestLapTime)) {
+                bestLapTime = totalTime;
+                localStorage.setItem('auto_rally_best_time', bestLapTime);
+                document.getElementById('bestLapText').innerText = formatTime(bestLapTime);
+                isNewBest = true;
+            }
+
+            document.getElementById('overlayTitle').innerText = '🏆 RACE FINISHED!';
+            document.getElementById('overlayDesc').innerHTML = `
+                <div class="space-y-1 text-sm">
+                    <p class="text-amber-300 font-bold text-base">${isNewBest ? '🎉 NEW RECORD BEST TIME!' : 'Great Race!'}</p>
+                    <p>Total Time: <strong class="text-white">${formatTime(totalTime)}</strong></p>
+                    <p>Coins Collected: <strong class="text-yellow-400">🪙 ${coinsCollected}</strong></p>
+                </div>
+            `;
+            document.getElementById('overlay').classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
